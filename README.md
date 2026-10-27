@@ -3,7 +3,19 @@
 **Author: Lakshmi Sindhu Pulugundla**
 **Analysis date: 2025-10-04 · corrected re-analysis: 2026-10-27**
 
+
 ***
+
+## At a glance
+
+| | |
+| --- | --- |
+| **Question** | Which audio attributes predict how long a track gets played? |
+| **Data** | 10,080 rows from a Spotify song-attributes export — but only **5,040 distinct tracks**: a non-unique join listed every track twice |
+| **Corrected result** | **R² ≈ 0.085** on the log scale; mean held-out **R² ≈ 0.05** across 200 random 70/30 splits |
+| **What carries the signal** | Genre and artist (~8.3 of the 8.5 points); the three audio attributes add **0.26 percentage points** |
+| **What the first version got wrong** | A doubled sample, and a KNN imputer fitted over all 22 columns — including the outcome |
+| **Reproduce** | `rmarkdown::render("Enhanced-Spotify-Attribute-Analysis.rmd")` |
 
 ## 👋 Welcome!
 
@@ -21,11 +33,10 @@ checks a claim of this kind needs.
 > transcribed from the rendered output. Any number that can be re-derived should be
 > re-derived rather than trusted from the prose.
 
-The first version of this analysis is preserved unmodified in `../work/v1/`
-(alongside the repository)
-(notebook, rendered HTML, and its README). It reached two conclusions this version
-does not support; **Section 7 of the notebook** states exactly what changed and
-why.
+The first version reached two conclusions this one does not support. Both are
+quoted verbatim — and displaced — in **Section 7 of the notebook**, and the
+history is summarised in the "At a glance" table above. The commit history of this
+repository contains the earlier analysis; nothing in it is hidden or rewritten.
 
 ***
 
@@ -152,9 +163,10 @@ bias-variance trade-off, not by the attributes being uninformative. What the dat
 does not contain is context: mood, device, playlist position, and who is listening.
 
 **Q: Where can I check the intermediate steps?**
-A: Every transformation prints its own before/after summary in the notebook, and the
-first version's code and output are kept in `../work/v1/` so the two can be compared
-line by line.
+A: Every transformation prints its own before/after summary in the notebook, so any
+number in this README can be traced to the cell that produced it. Section 7 is the
+audit trail: it lists the first version's two conclusions, the evidence that
+displaced each, and what the corrected analysis changed in the code.
 
 ***
 
