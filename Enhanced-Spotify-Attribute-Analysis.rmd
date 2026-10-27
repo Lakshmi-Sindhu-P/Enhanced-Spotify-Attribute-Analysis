@@ -1,788 +1,886 @@
 ---
-title: "Enhanced Analysis on Spotify Attributes Data"
+title: "Enhanced Spotify Attribute Analysis"
+subtitle: "Corrected re-analysis (v2)"
 author: "Lakshmi Sindhu Pulugundla"
-date: "2025-10-04"
-output: html_document
+date: "October 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    df_print: kable
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 4.5, dpi = 110)
+has <- function(p) requireNamespace(p, quietly = TRUE)
 ```
 
-Let's Dive into the Implementation part now - 
-# **Part 1: Initial Analysis**
-## 1. Data Selection and Exploration - 
-We chose a realworld dataset containing both continuous and Categorical Variables. Now let's focus on Exploration for which we will first have to- 
+# 0. What this document is
 
-### **1.1 Load the necessary libraries and dataset:**
-```{r}
-# Load necessary libraries
-library(dplyr)  # For data manipulation
-library(ggplot2)  # Optional, for visualization if needed
-#install.packages("VIM") # KNN imputation
-library(VIM)
-library(corrplot)
-# Load necessary library for diagnostic tests
-library(lmtest)
-# Multicolinearity
-library(car)
+This is the same question as before — **which musical attributes predict how long a
+track gets listened to?** — asked of the same data, but with the data-quality
+problems of the first version fixed and every claim re-derived from scratch.
 
+The first version (preserved, unchanged, in `../work/v1/`, alongside this
+repository) concluded that the three
+continuous attributes (danceability, energy, tempo) were *"redundant"* given genre
+and artist, and that the model *"does not predict playback time out of sample"*.
+Neither conclusion holds up as stated. One is reversed here; the other is true only
+on the untransformed scale. This version supersedes both, and Section 7 states exactly
+what changed.
+
+The short answer this analysis supports:
+
+> **Genre and artist explain a modest share of the variation in listening
+> behaviour, and a small amount of the rest is associated with the audio
+> attributes — but that association is not one effect. It is a negative association
+> with *falling below one full play*, and a weak association with how much a track is
+> played once it is already playing; the pooled coefficient is not an average of the
+> two, because they are measured on different scales, and what it mostly measures is
+> **whether a track is reached at all**. Genre and artist remain much the stronger
+> predictors, and the three audio attributes add about a quarter of a percentage
+> point on top of them.**
+
+Everything below is computed from the raw CSV in this document; there are no
+saved intermediate objects.
+
+```{r libs}
+have_nlme <- has("nlme")   # ships with R; used only for the mixed-model check
 ```
 
-```{r}
-# Load the Spotify attribute dataset
-data <- read.csv("./data/Spotify_Song_Attributes.csv")
-# Create a copy of the spotify attribute dataset
-spotify_data <- data
-# View the first few rows to understand the structure
-head(spotify_data)
-```
-#### **Inference**:
-The dataset is successfully loaded into R, and a copy (`spotify_data`) is created to preserve the original data. We can now inspect the first few rows to understand its structure.
+# 1. Data and the unit of observation
 
-### **1.2 View Dataset Structure**
-```{r}
-# View the structure of the data
-str(spotify_data)
-```
-#### **Inference**:
+The file has `r nrow(read.csv("data/Spotify_Song_Attributes.csv"))` rows and 22
+columns. Before anything else: what is a row?
 
-- The dataset contains **10,080 observations** and **22 variables**, including both continuous and categorical attributes.
-- Key continuous variables: `msPlayed`, `danceability`, `energy`, `tempo`, and `loudness`.
-- Key categorical variables: `genre` and `artistName`.
-- Some columns, such as `track_href`, `uri`, and `id`, are non-informative for analysis and can be removed.
-- Missing values are present in critical columns like `danceability`, `energy`, and `tempo` (550 rows each).
-- Data types are generally appropriate (e.g., numeric for continuous variables, character for categorical), but some categorical variables require standardization (e.g., `genre` and `artistName`).
-
-
-### **1.3 Statistical Summary of Each Column:**
-
-```{r}
-# View a summary of each column (e.g., min, max, mean, etc.)
-summary(spotify_data)
-```
-#### **Inference**:
-
-- **Response Variable (`msPlayed`)**:
-  - Highly variable, with values ranging from **0** to **158,367,130 ms**.
-  - Median playback time is **266,288 ms**, with a mean of approximately **1,519,657 ms**, suggesting potential outliers.
-
-- **Continuous Variables**:
-  - **`danceability`**, **`energy`**, and **`tempo`**:
-    - Distributions appear to range from minimal to maximum values, indicating diversity in song attributes.
-    - Missing values (550 rows) may affect modeling and require handling.
-  - **`loudness`**:
-    - Negative mean and median values indicate quieter tracks overall, with some louder tracks present.
-
-- **Categorical Variables**:
-  - **`genre`**:
-    - A mix of general and specific genres, with missing or empty values recorded.
-  - **`artistName`**:
-    - Significant variability, with some names potentially requiring standardization (e.g., handling special characters, whitespace).
-
-- **Other Observations**:
-  - Variables such as `id`, `uri`, and `track_href` are identifiers and do not contribute to the analysis.
-  - Columns like `type` are constant and can be excluded.
-
-With this understanding of the dataset's structure and attributes, the next step is to identify and select three continuous variables and two categorical variables that are most relevant for modeling. These selected predictors will form the foundation of our regression analysis, guiding feature engineering and model specification.
-
-### 1.4 Select 3 Continuous and 2 Categorical Variables:
-The selection of variables is a critical step in regression analysis, as it determines the predictors that will explain the variability in the response variable `(msPlayed)`. 
-
-For continuous variables - 
-
-  - Attributes with **high variability**.  
-  - Strong **relevance** to playback time.  
-  - Minimal **missing values**.
-
-For categorical variables - 
-
-  - Predictors with **sufficient representation** in the dataset.  
-  - Potential **influence** on playback time based on domain knowledge.
-  
-This approach should ensure that the model captures key **patterns** and **interactions** in the data effectively.
-
-
-
-#### 1.4.1 Selection of Variables
-Let's start with the Continuous Variables:
-```{r}
-# Response Variable
-response_variable <- "msPlayed"
-
-# Continuous Variables: Selecting based on variability and relevance
-
-# Checking summary statistics of numeric variables to identify candidates
-numeric_cols <- sapply(spotify_data, is.numeric)
-numeric_summary <- summary(spotify_data[, numeric_cols])
-
-# Displaying summary for analysis
-print(numeric_summary)
-
-```
-#### Selected Variables:
-From the dataset, the following continuous variables stand out for their relevance to playback duration:  
-1. **Danceability**: How suitable a track is for dancing, with values ranging from 0 to 0.9760 (Mean: 0.6025).  
-2. **Energy**: A measure of intensity and activity, ranging from 0.0011 to 0.9990 (Mean: 0.5635).  
-3. **Tempo**: The track’s pace in beats per minute, varying between 0 and 236.20 (Mean: 119.37).  
-
-#### Issues Identified:
-- **Missing Values**: All three variables have 550 missing values that must be addressed before analysis.  
-- **Outliers**: Extremely low values in `tempo` (Min: 0) and `energy` (Min: 0.0011) may indicate errors or unusual cases that need review.  
-- **Scaling**: These variables might require normalization to ensure they contribute equally to the regression model.  
-
-#### Inference:
-These continuous variables provide meaningful insights into track characteristics and their influence on playback duration. However, careful preprocessing is crucial to handle missing data and outliers effectively, ensuring the reliability of the analysis.
-
-With the continuous variables selected, the next step is to dive into the categorical variables, such as `genre` and `artistName`. These features can reveal trends and patterns that help explain playback duration from a categorical perspective. Let’s explore their potential.
-
-But before that, let's load the selected columns into a list
-```{r}
-continuous_variables <- c("danceability", "energy", "tempo")
-
+```{r unit}
+raw <- read.csv("data/Spotify_Song_Attributes.csv", stringsAsFactors = FALSE)
+pair <- paste(raw$trackName, raw$artistName)
+cat("rows                        :", nrow(raw), "\n")
+cat("distinct (track, artist)    :", length(unique(pair)), "\n")
+cat("copies per track            :", paste(names(table(table(pair))), table(table(pair)), sep = "x", collapse = ", "), "\n")
+cat("any timestamp / user / session column:",
+    any(tolower(names(raw)) %in% c("ts", "user", "date", "endtime", "played_at")), "\n")
 ```
 
-Now, let's look into the Categorical Variables - 
-```{r}
-# Categorical Variables: Identifying based on frequency distribution and relevance
-# Analyzing the unique counts of categorical columns
-categorical_cols <- sapply(spotify_data, is.character)
-spotify_data %>%
-  select(which(categorical_cols)) %>%
-  summarise_all(~ length(unique(.)))
+Every track appears **exactly twice**, and the two copies are identical in every
+column that is not part of the key — not merely similar. The file cannot tell us
+which step produced it, but the pattern is what a join on a non-unique key leaves
+behind, and two further facts point the same way.
 
-# Suggested Categorical Variables (based on analysis)
-categorical_variables <- c("genre", "artistName")
-
-```
-#### Inference:
-The code analyzed the unique value counts of all categorical columns in the dataset to identify meaningful predictors. Among the categorical columns:
-- **`genre`** has 524 unique values, representing various music genres, making it a promising candidate for analysis.
-- **`artistName`** has 2,312 unique values, capturing a wide range of artists, which may provide insights into playback patterns.
-- Other columns such as **`type`**, **`id`**, **`uri`**, **`track_href`**, and **`analysis_url`** primarily contain identifiers or URLs with limited analytical relevance. These columns can be excluded from further analysis.
-
-This analysis confirms that **`genre`** and **`artistName`** are the most relevant categorical variables for inclusion in the regression model. Their diversity offers potential for capturing patterns in playback duration, provided these categories are effectively cleaned and standardized.
-
-
-Having identified **`danceability`**, **`energy`**, and **`tempo`** as the key continuous variables and **`genre`** and **`artistName`** as the critical categorical variables, the next step focuses on data cleaning. This involves handling missing values, addressing potential outliers, and standardizing categorical variables to ensure they are model-ready. Let’s proceed with preparing these variables for the regression analysis.
-
-## 2. Data Cleaning:
-### 2.1 Handling Missing Values
-**Identifyig Missing Values - **
-```{r}
-colSums(is.na(spotify_data))
-
+```{r dup-mechanism}
+same <- sapply(split(seq_len(nrow(raw)), pair),
+               function(i) all(sapply(raw[i, -1], function(v) length(unique(v)) == 1)))
+id_count <- table(raw$id[raw$id != ""])
+cat("identical within pair, non-key columns :", all(same), "\n")
+cat("ids shared by two DIFFERENT titles    :",
+    sum(sapply(names(id_count[id_count == 4]), function(i) length(unique(raw$trackName[raw$id == i])) == 2)), "\n")
+cat("rows with a blank id (failed join)    :", sum(raw$id == ""), "\n")
 ```
 
-**Observation:** Columns like `danceability`, `energy`, `tempo`, and others have 550 missing values, while some columns have no missing values.
+The 29 ids that appear four times are each shared by **two different titles**
+(usually a track and another version of the same song). That is the signature of a
+join on `id` rather than on `id` plus a title key — and it has a consequence the
+first version never drew: those 58 tracks were given audio features looked up under
+an id that also belongs to another recording, so some of their features may describe
+the other version. The 550 blank-id rows carry no audio features at all, which is
+what the unmatched arm of such a join looks like: their metadata came through, their
+audio lookup did not.
 
-To handle the missing values, let's first try and analyse the missing value summary - 
-```{r}
-missing_summary <- colSums(is.na(spotify_data)) / nrow(spotify_data) * 100
-print(missing_summary)
+**The unit of observation is one track, not one row.** All analysis below uses
+`r length(unique(pair))` distinct tracks. Nothing about the coefficients of an
+ordinary least-squares fit changes when you duplicate rows, which is why the
+first version's estimates looked plausible. The first version did notice the
+duplication and said so in its closing section, but its models were fitted before
+that point and were never re-fitted; the effect is that everything about its *inference*
+changes, because standard errors, p-values, AIC and every count were computed on
+twice as much data as existed.
 
-```
-Let's check for missing data patterns - 
-```{r}
-if (!require(naniar)) {
-  install.packages("naniar")
-  library(naniar)
-} else {
-  library(naniar)
-}
-gg_miss_var(spotify_data)
-```
-#### Inference:
-Our selected continuous variables—**danceability**, **energy**, and **tempo**—each have around 550 missing values, accounting for about 5.5% of the dataset. Since these variables are central to our regression analysis, removing rows with missing values would significantly reduce our sample size, potentially affecting the model's reliability.
-
-To address this, we considered different imputation methods:
-- **Mean or Median Imputation** could fill the gaps but might distort the distribution, especially if the data is skewed.
-- **K-Nearest Neighbors (KNN) Imputation** leverages similar observations to predict missing values, which helps maintain relationships within the data.
-- **Regression-Based Imputation** and **Multiple Imputation** are alternatives, but they can add complexity without necessarily improving the outcome for our purposes.
-
-Given the balance between accuracy and practicality, **KNN imputation** is our chosen approach. It allows us to estimate missing values based on similarities in the dataset, preserving both data relationships and sample size for a more robust regression analysis.
-
-Let’s proceed with KNN imputation to handle the missing values in our continuous variables. 
-
-**KNN Imputation for Missing Values**:
-```{r}
-# Specify the continuous variables with missing values
-continuous_vars <- c("danceability", "energy", "tempo")
-
-# Perform KNN imputation on the dataset for the specified columns
-spotify_data_imputed <- kNN(spotify_data, variable = continuous_vars, k = 5)
-
-# Check if missing values are handled
-colSums(is.na(spotify_data_imputed))
-
+```{r dedupe}
+d <- raw[!duplicated(pair), ]
+stopifnot(nrow(d) == length(unique(pair)))
+d$artist_full <- trimws(d$artistName)   # kept uncut, for the dependence check in 5.3
 ```
 
+## 1.1 What the response actually measures
 
-```{r}
-# View the structure and summary after imputation
-str(spotify_data_imputed)
-summary(spotify_data_imputed[continuous_vars])
+`msPlayed` is cumulative time, not the length of one play. Comparing it to the
+track's own duration (which the file provides) tells us whether a track was
+skipped, played once, or repeated.
 
+```{r response}
+audio_vars <- c("danceability", "energy", "key", "loudness", "mode", "speechiness",
+                "acousticness", "instrumentalness", "liveness", "valence", "tempo",
+                "duration_ms", "time_signature")
+d$audio_missing <- apply(d[, audio_vars], 1, function(r) all(is.na(r) | r == ""))
+d$plays <- d$msPlayed / d$duration_ms
+
+skip_share <- mean(d$plays < 1, na.rm = TRUE)
+cat("tracks with no audio features at all :", sum(d$audio_missing), "\n")
+cat("share of tracks below one full play  :", sprintf("%.1f%%", 100 * skip_share), "\n")
+cat("share below half a play              :", sprintf("%.1f%%", 100 * mean(d$plays < 0.5, na.rm = TRUE)), "\n")
+cat("median plays (tracks that were started):", sprintf("%.2f", median(d$plays, na.rm = TRUE)), "\n")
+cat("maximum plays                        :", sprintf("%.0f", max(d$plays, na.rm = TRUE)), "\n")
+cat("maximum msPlayed                     :", sprintf("%.1f hours", max(d$msPlayed)/3.6e6), "\n")
 ```
 
-With the continuous variables (`danceability`, `energy`, `tempo`) and their missing values successfully handled using KNN imputation, we have ensured the dataset's integrity while maintaining its structure. Additionally, the inclusion of indicator columns (`danceability_imp`, `energy_imp`, `tempo_imp`) allows us to trace imputed values and assess their impact on the analysis. To streamline our upcoming regression analysis, we will now create a reduced dataset containing only the essential columns: the response variable (`msPlayed`), selected predictors (`danceability`, `energy`, `tempo`, `genre`, and `artistName`), imputation indicators, and the `trackName` for identification. This focused dataset will simplify further processing while retaining all critical information.
+`r sprintf("%.1f%%", 100 * skip_share)` of tracks were abandoned before one full
+play's worth of listening accumulated, while a few were repeated hundreds of
+times. `msPlayed` is therefore a *mixture* of two behaviours — the decision to
+skip and the amount of listening given a non-skip — and a single linear model on
+the raw total answers neither question precisely. This is the central structural
+fact about the data, and Section 6 takes it seriously.
 
-#### Code to Create Reduced Dataset
+## 1.2 Missingness
 
-```{r}
-# Extract the required columns for analysis, including imputation indicators
-columns_needed <- c("trackName", "msPlayed", "danceability", "danceability_imp", "energy", "energy_imp", "tempo", "tempo_imp", "genre", "artistName")
-spotify_analysis_data <- spotify_data_imputed %>% select(all_of(columns_needed))
-
-# View the structure of the new dataset to confirm
-str(spotify_analysis_data)
-
-# Display the first few rows of the new dataset
-head(spotify_analysis_data)
-
+```{r missing}
+d$genre_missing <- is.na(d$genre) | trimws(d$genre) == ""
+cat("genre missing            :", sum(d$genre_missing), sprintf("(%.1f%%)", 100 * mean(d$genre_missing)), "\n")
+cat("all audio missing        :", sum(d$audio_missing), sprintf("(%.1f%%)", 100 * mean(d$audio_missing)), "\n")
+cat("  of which genre missing :", sum(d$audio_missing & d$genre_missing), "\n")
+cat("median msPlayed, audio present :", sprintf("%.0f", median(d$msPlayed[!d$audio_missing])), "\n")
+cat("median msPlayed, audio missing :", sprintf("%.0f", median(d$msPlayed[d$audio_missing])), "\n")
 ```
 
-1. **Selection of Essential Columns**: Includes the predictors, response variable, imputation indicators, and `trackName`.
-2. **Reduced Complexity**: Focuses on columns relevant to the regression analysis while excluding irrelevant or redundant columns.
-3. **Output**: Saves the reduced dataset to a CSV file for ease of access in subsequent steps.
+The two missingness patterns are different problems and deserve different
+treatments: a missing **genre** is a missing label on an otherwise measured
+track, while missing **audio** is a track that never matched the audio-features
+source at all. The first version imputed the audio columns for those tracks with
+k-nearest neighbours. That is not defensible here:
 
-##### Key Observations:
-1. **Track Identifiers**: 
-   - `trackName`: This column contains the names of the tracks, which can serve as identifiers.
-   
-2. **Response Variable**:
-   - `msPlayed`: Represents the playback duration in milliseconds.
+* the neighbour metric was computed over all 22 columns, which includes
+  `msPlayed` — the response variable — so the imputed covariates were partly a
+  function of the outcome;
+* the result was degenerate: the imputed rows collapsed onto essentially one
+  donor value (imputed energy had *zero* variance), so 550 rows were assigned a
+  fabricated point mass rather than a plausible measurement;
+* the 275 affected tracks are not a random sample — they have a lower median
+  playback and no genre at all.
 
-3. **Continuous Predictors**:
-   - `danceability`, `energy`, `tempo`: Key features relevant to predicting playback time.
-   - Associated imputation flags (`danceability_imp`, `energy_imp`, `tempo_imp`) indicate whether these values were imputed during the data preparation process.
+Those 275 tracks are therefore **excluded from the models that use audio
+features** and retained (with an explicit indicator) in a sensitivity model in
+Section 5.4. That is a real limitation, stated as such, rather than papered over
+with imputed numbers.
 
-4. **Categorical Predictors**:
-   - `genre` and `artistName`: These columns remain to be cleaned and standardized for use in the analysis.
+# 2. Preprocessing
 
-**Imputed Quality Visualisation**
+The cleaning logic is the first version's, with the defects corrected. What
+changed, and why:
 
-```{r}
-# Imputation Quality: histograms before and after for 'danceability'
-par(mfrow = c(1,2))
-hist(spotify_data$danceability, main = "Danceability (Original)", xlab = "Value", col = "skyblue")
-hist(spotify_analysis_data$danceability, main = "Danceability (Imputed)", xlab = "Value", col = "orange")
-par(mfrow = c(1,1))
+| v1 choice | v2 choice | Why |
+|---|---|---|
+| Modelled 10,080 rows | 5,040 distinct tracks | Rows were an exact 2x duplication (Section 1) |
+| kNN imputation over all 22 columns | No imputation; 275 no-audio tracks excluded from audio models, with an indicator sensitivity model | Response leaked into the neighbour metric; imputation was degenerate |
+| Rare-genre filter applied before the genre mapping | Applied after the mapping | In v1 the filter compared mapped labels against counts of *raw* labels, so it silently matched nothing and levels meant to be collapsed survived |
+| Missing genre to `"Other"` | Missing genre to its own `"Unspecified"` level | `"Other"` already means "rare label"; conflating it with "not recorded" mixes two different things (29% of v1's `Other` was actually missing data) |
+| Artist: collapse empty names to `"Other"`, then `tolower()` | Transliterate from UTF-8, lowercase first, then collapse | In v1 the ordering produced two distinct levels, `"Other"` and `"other"` (6,164 vs 44 tracks), the smaller being an artefact of stripping accents and non-Latin characters |
+| Rare-artist threshold `< 10` applied to duplicated counts | Applied to distinct tracks | Duplication doubled every count, so the threshold kept many artists that only qualified because their rows were counted twice (178 levels to 52) |
+| IQR capping and min-max scaling of predictors | Untouched raw units; standardised effects reported instead | Capping moved 178 legitimately low-danceability tracks and clipped 24 tempo values; min-max is a linear rescale that changes no R² and destroys interpretability |
+| Reference levels set implicitly by alphabetical order | Set explicitly to the most frequent level | Alphabetical reference levels are an accident of spelling, and here they happened to be tiny categories |
+| Response untransformed (skew 13.6) | log10(msPlayed + 1) | See Section 2.1 |
 
-# Repeat for 'energy', 'tempo':
-par(mfrow = c(1,2))
-hist(spotify_data$energy, main = "Energy (Original)", xlab = "Value", col = "lightgreen")
-hist(spotify_analysis_data$energy, main = "Energy (Imputed)", xlab = "Value", col = "darkgreen")
-par(mfrow = c(1,2))
-hist(spotify_data$tempo, main = "Tempo (Original)", xlab = "Value", col = "coral")
-hist(spotify_analysis_data$tempo, main = "Tempo (Imputed)", xlab = "Value", col = "firebrick")
-par(mfrow = c(1,1))
-
-```
-
-#### Next Steps:
-With the core columns identified, the focus now shifts to cleaning and standardizing the categorical columns (`genre` and `artistName`) and handling potential inconsistencies in `trackName`. Proper cleaning ensures consistency and reliability in the regression model.
-
-### 2.2 Categorical Column Cleaning and Standardization
-#### 2.2.1 Genre Column -
-The `genre` column, as one of the categorical variables in our dataset, represents the musical genre of tracks. However, it contains inconsistencies, missing values, and a wide variety of categories, some of which are rare. Cleaning and standardizing this column are critical to ensure it contributes meaningfully to the regression analysis. This involves addressing missing values, standardizing formats, grouping rare categories, and mapping values into broader, interpretable categories.
-
-We now proceed to implement the cleaning and standardization of the `genre` column.
-
-**Step 1: Handling Missing and Empty Values**
-Replacing empty or missing genres with a placeholder like "Unspecified Genre" to avoid data loss.
-
-```{r}
-# Replacing empty genre values with "Unspecified Genre"
-spotify_analysis_data$genre[spotify_analysis_data$genre == "" | is.na(spotify_analysis_data$genre)] <- "Unspecified Genre"
-```
-
-**Step 2: Standardizing Genre Names**
-Converting all genre names to lowercase for consistency.
-
-```{r}
-# Converting genre names to lowercase
-spotify_analysis_data$genre <- tolower(spotify_analysis_data$genre)
-```
-
-
-**Step 3: Analyzing Genre Frequencies**
-Checking the frequency of unique genres to identify rare categories for grouping.
-
-```{r}
-# Displaying the frequency of genres
-genre_counts <- sort(table(spotify_analysis_data$genre), decreasing = TRUE)
-head(genre_counts, 25)  # Display the top 25 genres
-```
-
-##### Inference:
-- **Unspecified Genre**:
-   - Observed 1,500 entries with "Unspecified Genre," indicating missing or unclear data that requires handling to avoid bias in the analysis.
-
-- **Dominant Genres**:
-   - Frequently occurring genres like "alt z" (656), "pop" (602), and "filmi" (412) dominate the dataset, highlighting their importance in analysis.
-
-- **Rare Genres**:
-   - Many genres, such as "baroque pop" (68) and "lo-fi chill" (70), have low representation, contributing to the long-tail distribution.
-
-- **Genre Imbalance**:
-   - The distribution of genres is imbalanced, with a few common categories and many rare ones, suggesting the need for grouping or consolidation.
-
-- **Impact on Analysis**:
-   - Cleaning and standardizing the genre column will ensure better interpretability, reduce sparsity, and improve the robustness of regression models by minimizing noise from rare categories.
-
-To address the challenges identified in the genre column—unspecified genres, rare categories, and imbalanced representation—we’ll map existing genres to broader, standardized categories. This step enhances interpretability, consolidates similar categories, and ensures meaningful patterns are captured in our analysis. Let’s proceed with implementing the genre mapping.
-
-**Step 4: Mapping Genres into Broader Categories**
-Using a predefined mapping to standardize genre values.
-
-
-```{r}
-
-# # Applying mapping with recode
+```{r prep-genre}
+d$genre <- ifelse(d$genre_missing, NA, tolower(d$genre))
 genre_mapping <- c(
-   "alt z" = "alternative",
-  "album rock" = "rock",
-  "british orchestra" = "classical",
-  "desi hip hop" = "hip hop",
-  "bedroom r&b" = "r&b",
-  "singer-songwriter pop" = "pop",
-  "la pop" = "pop",
-  "lo-fi chill" = "lo-fi",
-  "orchestral soundtrack" = "classical",
-  "comic" = "other",
-  "alternative metal" = "metal",
-  "deep underground hip hop" = "hip hop",
-  "pop" = "pop",
-  "classical" = "classical",
-  "modern alternative rock" = "alternative",
-  "scandipop" = "pop",
-  "punjabi pop" = "pop",
-  "folk-pop" = "folk",
-  "acoustic pop" = "pop",
-  "art pop" = "pop",
-  "electronica" = "electronic",
-  "dance pop" = "pop",
-  "bedroom pop" = "pop",
-  "chill r&b" = "r&b",
-  "indian lo-fi" = "lo-fi",
-  "instrumental post-rock" = "post-rock",
-  "classic bollywood" = "bollywood",
-  "afghan pop" = "pop",
-  "classic rock" = "rock",
-  "german soundtrack" = "classical",
-  "anime lo-fi" = "lo-fi",
-  "lo-fi study" = "lo-fi",
-  "dark r&b" = "r&b",
-  "modern indie pop" = "indie",
-  "pop edm" = "edm",
-  "uk contemporary r&b" = "r&b",
-  "emo rap" = "hip hop",
-  "classic pakistani pop" = "pop",
-  "japanese chillhop" = "chillhop",
-  "japanese vgm" = "vgm",
-  "anime" = "other",
-  "bhangra" = "indian",
-  "afrobeats" = "afrobeat",
-  "j-pop" = "asian pop",
-  "k-pop" = "asian pop"
-)
+  "alt z" = "alternative", "album rock" = "rock", "british orchestra" = "classical",
+  "desi hip hop" = "hip hop", "bedroom r&b" = "r&b", "singer-songwriter pop" = "pop",
+  "la pop" = "pop", "lo-fi chill" = "lo-fi", "orchestral soundtrack" = "classical",
+  "comic" = "other", "alternative metal" = "metal", "deep underground hip hop" = "hip hop",
+  "pop" = "pop", "classical" = "classical", "modern alternative rock" = "alternative",
+  "scandipop" = "pop", "punjabi pop" = "pop", "folk-pop" = "folk", "acoustic pop" = "pop",
+  "art pop" = "pop", "electronica" = "electronic", "dance pop" = "pop",
+  "bedroom pop" = "pop", "chill r&b" = "r&b", "indian lo-fi" = "lo-fi",
+  "instrumental post-rock" = "post-rock", "classic bollywood" = "bollywood",
+  "afghan pop" = "pop", "classic rock" = "rock", "german soundtrack" = "classical",
+  "anime lo-fi" = "lo-fi", "lo-fi study" = "lo-fi", "dark r&b" = "r&b",
+  "modern indie pop" = "indie", "pop edm" = "edm", "uk contemporary r&b" = "r&b",
+  "emo rap" = "hip hop", "classic pakistani pop" = "pop", "japanese chillhop" = "chillhop",
+  "japanese vgm" = "vgm", "anime" = "other", "bhangra" = "indian",
+  "afrobeats" = "afrobeat", "j-pop" = "asian pop", "k-pop" = "asian pop")
+hit <- !is.na(d$genre) & d$genre %in% names(genre_mapping)
+d$genre[hit] <- genre_mapping[d$genre[hit]]
+d$genre[!is.na(d$genre) & d$genre == "other"] <- "Other"
+d$genre[is.na(d$genre)] <- "Unspecified"
 
-
+# rare-genre collapse, applied AFTER the mapping (the v1 filter ran on stale counts)
+gc50 <- table(d$genre)
+rare <- names(gc50[gc50 < 50 & names(gc50) != "Unspecified"])
+d$genre <- ifelse(d$genre %in% rare, "Other", d$genre)
 ```
 
-
-
-```{r}
-# Applying mapping with recode
-spotify_analysis_data$genre <- dplyr::recode(
-  spotify_analysis_data$genre,
-  "alt z" = "alternative",
-  "album rock" = "rock",
-  "british orchestra" = "classical",
-  "desi hip hop" = "hip hop",
-  "bedroom r&b" = "r&b",
-  "singer-songwriter pop" = "pop",
-  "la pop" = "pop",
-  "lo-fi chill" = "lo-fi",
-  "orchestral soundtrack" = "classical",
-  "comic" = "other",
-  "alternative metal" = "metal",
-  "deep underground hip hop" = "hip hop",
-  "pop" = "pop",
-  "classical" = "classical",
-  "modern alternative rock" = "alternative",
-  "scandipop" = "pop",
-  "punjabi pop" = "pop",
-  "folk-pop" = "folk",
-  "acoustic pop" = "pop",
-  "art pop" = "pop",
-  "electronica" = "electronic",
-  "dance pop" = "pop",
-  "bedroom pop" = "pop",
-  "chill r&b" = "r&b",
-  "indian lo-fi" = "lo-fi",
-  "instrumental post-rock" = "post-rock",
-  "classic bollywood" = "bollywood",
-  "afghan pop" = "pop",
-  "classic rock" = "rock",
-  "german soundtrack" = "classical",
-  "anime lo-fi" = "lo-fi",
-  "lo-fi study" = "lo-fi",
-  "dark r&b" = "r&b",
-  "modern indie pop" = "indie",
-  "pop edm" = "edm",
-  "uk contemporary r&b" = "r&b",
-  "emo rap" = "hip hop",
-  "classic pakistani pop" = "pop",
-  "japanese chillhop" = "chillhop",
-  "japanese vgm" = "vgm",
-  "anime" = "other",
-  "bhangra" = "indian",
-  "afrobeats" = "afrobeat",
-  "j-pop" = "asian pop",
-  "k-pop" = "asian pop"
-)
+```{r prep-artist}
+a <- trimws(d$artistName)
+a_tr <- iconv(a, from = "UTF-8", to = "ASCII//TRANSLIT")   # keep accents as letters
+a_tr[is.na(a_tr)] <- a[is.na(a_tr)]
+a <- a_tr
+subs <- data.frame(
+  pat = c("\\$", "@", "&", "!", "#", "\\*", "%", "\\.", ",", "\\(", "\\)", "\\[", "\\]"),
+  rep = c("s", "a", " and ", "", "", "", " percent ", "", "", "", "", "", ""),
+  stringsAsFactors = FALSE)
+for (i in seq_len(nrow(subs))) a <- gsub(subs$pat[i], subs$rep[i], a)
+a <- tolower(gsub("\\s+", " ", trimws(gsub("[^a-zA-Z0-9 ]", "", a))))
+a[nchar(a) == 0] <- "other"
+ac <- table(a)
+a[a %in% names(ac[ac < 10 & names(ac) != "other"])] <- "Other"
+a[a == "other"] <- "Other"          # names that did not survive at all are not identities
+d$artistName <- a
 ```
 
-```{r}
-# Apply mapping with a loop
-for (key in names(genre_mapping)) {
-  spotify_analysis_data$genre[spotify_analysis_data$genre == key] <- genre_mapping[key]
+```{r prep-final}
+d$log_msPlayed <- log10(d$msPlayed + 1)
+ref_genre  <- names(sort(table(d$genre), decreasing = TRUE))[1]
+ref_artist <- names(sort(table(d$artistName), decreasing = TRUE))[1]
+d$genre      <- relevel(factor(d$genre), ref = ref_genre)
+d$artistName <- relevel(factor(d$artistName), ref = ref_artist)
+
+ca <- d[!d$audio_missing, ]          # complete-audio tracks: the modelling sample
+ca$genre <- droplevels(ca$genre); ca$artistName <- droplevels(ca$artistName)
+cat("distinct tracks                  :", nrow(d), "\n")
+cat("with complete audio features     :", nrow(ca), "\n")
+cat("genre levels                     :", nlevels(ca$genre), "\n")
+cat("artist levels                    :", nlevels(ca$artistName), "\n")
+cat("reference level            : genre =", levels(ca$genre)[1],
+    "| artist =", levels(ca$artistName)[1], "\n")
+cat("\ngenre distribution in the modelling sample:\n")
+print(sort(table(ca$genre), decreasing = TRUE))
+```
+
+## 2.1 The response transformation
+
+```{r transform}
+skew <- function(x) { x <- x - mean(x); mean(x^3) / mean(x^2)^1.5 }
+kur  <- function(x) { x <- x - mean(x); mean(x^4) / mean(x^2)^2 - 3 }
+prof <- function(lam) {
+  y  <- if (abs(lam) < 1e-9) log(d$msPlayed + 1) else ((d$msPlayed + 1)^lam - 1) / lam
+  m  <- lm(y ~ 1); n <- length(y)
+  -n/2 * (log(2 * pi) + log(sum(resid(m)^2) / n) + 1) + (lam - 1) * sum(log(d$msPlayed + 1))
+}
+lams <- seq(-0.4, 0.5, 0.005); ll <- sapply(lams, prof)
+lam_hat <- lams[which.max(ll)]
+cat("skewness, raw msPlayed :", sprintf("%.2f", skew(d$msPlayed)), "\n")
+cat("skewness, log10(ms+1)  :", sprintf("%.2f", skew(d$log_msPlayed)), "\n")
+cat("Box-Cox MLE lambda     :", sprintf("%.3f", lam_hat), "\n")
+cat("LR both ways vs lambda = 0 :", sprintf("%.1f", 2 * (max(ll) - prof(0))), "\n")
+```
+
+A log transform is conventional for a response like this, but the profile
+likelihood prefers a mild positive power, and $\lambda = 0$ is rejected. The
+practical difference is small and both scales are carried through the
+specification curve in Section 5.2; `log10(msPlayed + 1)` is the primary scale
+because it is standard, interpretable as a proportional change, and — as Section
+1.1 showed — it is the scale on which the skip/repeat mixture shows up as a
+distributional feature rather than as a handful of impossible outliers.
+
+# 3. Exploratory analysis
+
+```{r eda-response, fig.cap="Response on three scales. The raw scale hides its own tail: the mass sits in the first bin and the 40-hour tracks are invisible. On the log scale the skip/non-skip split appears as a separate left mode, and `plays` shows it directly."}
+par(mfrow = c(1, 3), mar = c(4, 4, 2, 1))
+hist(d$msPlayed / 60000, breaks = 60, col = "grey80", border = "white",
+     main = "raw (minutes)", xlab = "minutes", xlim = c(0, 300))
+hist(d$log_msPlayed, breaks = 40, col = "grey80", border = "white",
+     main = "log10(msPlayed + 1)", xlab = "log10(msPlayed + 1)")
+hist(log10(d$plays), breaks = 40, col = "grey80", border = "white",
+     main = "plays = msPlayed / duration", xlab = "log10(plays)", xlim = c(-3, 4))
+abline(v = 0, col = "firebrick", lty = 2)
+```
+
+```{r eda-cor}
+cvars <- c("danceability", "energy", "tempo")
+cat("correlation with log10(msPlayed + 1):\n")
+print(round(rbind(Pearson  = sapply(cvars, function(v) cor(ca[[v]], ca$log_msPlayed)),
+                  Spearman = sapply(cvars, function(v)
+                    cor(ca[[v]], ca$log_msPlayed, method = "spearman"))), 3))
+cat("\ncorrelation among the attributes:\n")
+print(round(cor(ca[, cvars]), 3))
+```
+
+Two near-zero correlations with the outcome, and weak collinearity among the
+attributes themselves. Neither fact settles whether the attributes are redundant:
+redundancy is a question about what a model gains, not about pairwise correlations
+(Section 4 answers it that way). What the correlations do rule out is the reading
+that these three variables are a re-encoding of genre — they are largely separate
+information (Section 7 quantifies how much genre and artist actually recover).
+
+```{r eda-genre, fig.cap="Listening by genre. Differences between genre medians are visible but modest; the spread within any genre dwarfs them."}
+boxplot(ca$log_msPlayed ~ ca$genre, las = 2, col = "grey85", border = "grey40",
+        ylab = "log10(msPlayed + 1)", xlab = "genre", cex.axis = .7, outline = FALSE)
+```
+
+```{r eda-skip}
+cat("share of tracks skipped before one full play, by genre:\n")
+print(round(sort(tapply(ca$plays < 1, ca$genre, mean), decreasing = TRUE), 3))
+```
+
+# 4. Do the attributes add anything beyond genre and artist?
+
+The model ladder answers exactly one question: **given genre and artist, do
+danceability, energy and tempo carry additional information about listening?**
+Everything is on the log scale, on distinct tracks, with audio features present.
+
+```{r ladder}
+f <- list(
+  M0 = log_msPlayed ~ 1,
+  M1 = log_msPlayed ~ danceability + energy + tempo,
+  M2 = log_msPlayed ~ genre,
+  M3 = log_msPlayed ~ artistName,
+  M4 = log_msPlayed ~ genre + artistName,
+  M5 = log_msPlayed ~ danceability + energy + tempo + genre + artistName,
+  M6 = log_msPlayed ~ (danceability + energy + tempo) * genre + artistName)
+fit <- lapply(f, function(fm) lm(fm, data = ca))
+tab <- do.call(rbind, lapply(names(fit), function(nm) {
+  m <- fit[[nm]]
+  data.frame(model = nm, params = length(coef(m)),
+             R2 = summary(m)$r.squared, adjR2 = summary(m)$adj.r.squared,
+             AIC = AIC(m), BIC = BIC(m))
+}))
+print(tab, row.names = FALSE, digits = 4)
+```
+
+```{r blocks}
+r2 <- function(m) summary(m)$r.squared
+tests <- list(c("M0","M1"), c("M0","M2"), c("M0","M3"), c("M4","M5"),
+              c("M5","M6"), c("M2","M4"), c("M3","M4"))
+lab <- c("audio alone", "genre alone", "artist alone", "audio | genre+artist",
+         "interactions | main effects", "artist | genre", "genre | artist")
+bt <- data.frame(comparison = lab,
+                 dR2 = c(r2(fit$M1) - r2(fit$M0), r2(fit$M2) - r2(fit$M0),
+                         r2(fit$M3) - r2(fit$M0), r2(fit$M5) - r2(fit$M4),
+                         r2(fit$M6) - r2(fit$M5), r2(fit$M4) - r2(fit$M2),
+                         r2(fit$M4) - r2(fit$M3)))
+for (i in seq_along(tests)) {
+  a <- anova(fit[[tests[[i]][1]]], fit[[tests[[i]][2]]])
+  bt$num_df[i] <- a$Df[2]; bt$den_df[i] <- a$Res.Df[2]
+  bt$F[i] <- a$F[2]; bt$p[i] <- a$`Pr(>F)`[2]
+}
+bt$dR2 <- round(bt$dR2, 4); bt$F <- round(bt$F, 3); bt$p <- signif(bt$p, 3)
+print(bt, row.names = FALSE)
+```
+
+Three things to read off this table.
+
+1. **Genre and artist both matter, and neither is redundant to the other** by these
+   tests — though BIC, with its heavier penalty, is willing to spend the artist
+   parameters and keep only genre. Each
+   adds significantly over the other (artist given genre
+   p = `r sprintf("%.2g", bt$p[6])`; genre given artist
+   p = `r sprintf("%.2g", bt$p[7])`). Together they explain
+   `r sprintf("%.1f%%", 100 * r2(fit$M4))` of the log-variance.
+2. **The audio attributes add a small but detectable increment** —
+   $\Delta R^2 = `r sprintf("%.4f", r2(fit$M5) - r2(fit$M4))`$,
+   `r sprintf("F(%d, %d) = %.2f", bt$num_df[4], bt$den_df[4], bt$F[4])`, p =
+   `r sprintf("%.4f", bt$p[4])`.
+   That is about `r sprintf("%.0f%%", 100 * (r2(fit$M5) - r2(fit$M4)) / r2(fit$M5))` of
+   the model's explained variance — small, but not zero.
+3. **Interactions are not supported.** 39 extra parameters buy
+   `r sprintf("%.4f", r2(fit$M6) - r2(fit$M5))` of R² and fail
+   (p = `r sprintf("%.2f", bt$p[5])`); both AIC and BIC penalise the model.
+
+The information criteria do not agree with each other, and that disagreement is part
+of the honest summary: AIC prefers M5, but **BIC prefers M2 — genre alone**, which
+drops both the audio block and the 51 artist parameters. BIC is telling us these data
+do not fund a 68-parameter model, and that is a fair reading; nothing later in this
+document resolves it. Section 5.2 shows which parts of the result depend on the
+analyst's choices and which do not.
+
+## 4.1 Which attribute?
+
+```{r coefs}
+m5 <- fit$M5
+X  <- model.matrix(m5); e <- resid(m5); h <- hatvalues(m5)
+bread <- solve(crossprod(X))
+V_hc3 <- bread %*% crossprod(X * (e / (1 - h))^2, X) %*% bread
+V_cl  <- vcov(m5)
+out <- do.call(rbind, lapply(c("danceability", "energy", "tempo"), function(v) {
+  b <- coef(m5)[v]; se <- sqrt(V_hc3[v, v]); s <- sd(ca[[v]])
+  data.frame(attribute = v, b = b, SE_OLS = sqrt(V_cl[v, v]), SE_HC3 = se,
+             t = b / se, p = 2 * pt(-abs(b / se), df.residual(m5)),
+             pct_per_SD = (10^(b * s) - 1) * 100)
+}))
+out[, 2:7] <- round(out[, 2:7], 4)
+print(out, row.names = FALSE)
+```
+
+Only **energy** is distinguishable from zero once genre and artist are held
+fixed, and its sign is negative: a one-standard-deviation increase in energy is
+associated with about `r sprintf("%.0f%%", abs(out$pct_per_SD[2]))` *less*
+listening time on the log scale. Danceability and tempo are not estimated
+precisely enough to support any direction. Section 6 takes this coefficient apart:
+it is the sum of a negative association with skipping and a positive association with
+duration, not a duration effect on its own.
+
+## 4.2 Diagnostics
+
+```{r diag}
+res <- resid(m5)
+aux <- summary(lm(I(res^2) ~ fitted(m5)))
+bp  <- aux$r.squared * length(res)
+cat("Breusch-Pagan (n x R2 of auxiliary regression) :",
+    sprintf("%.1f, p = %.4g", bp, pchisq(bp, 1, lower.tail = FALSE)), "\n")
+cat("residual skew / excess kurtosis                :",
+    sprintf("%.2f / %.2f", skew(res), kur(res)), "\n")
+cat("Shapiro-Wilk (2000-residual sample)            :",
+    sprintf("W = %.3f", shapiro.test(sample(res, 2000))$statistic), "\n")
+cd <- cooks.distance(m5)
+cat("Cook's D > 4/n                                 :", sum(cd > 4 / nrow(ca)),
+    sprintf("(%.1f%%), max %.3f", 100 * mean(cd > 4 / nrow(ca)), max(cd)), "\n")
+Xf <- X[, -1]
+vif <- sapply(c("danceability", "energy", "tempo"), function(v)
+  1 / (1 - summary(lm(Xf[, v] ~ Xf[, setdiff(colnames(Xf), v)]))$r.squared))
+cat("VIF against the full design                    :", round(vif, 2), "\n")
+cat("condition number (continuous scaled)           :",
+    round(kappa(cbind(scale(Xf[, 1:3]), Xf[, -(1:4)])), 1), "\n")
+# the same diagnostics on the RAW scale, so the comparison in 5.2 is an observed one
+raw5 <- lm(msPlayed ~ danceability + energy + tempo + genre + artistName, data = ca)
+bres <- summary(lm(I(resid(raw5)^2) ~ fitted(raw5)))$r.squared * nrow(ca)
+cat("raw scale: Breusch-Pagan p =", signif(pchisq(bres, 1, lower.tail = FALSE), 3),
+    "| residual skew =", sprintf("%.1f", skew(resid(raw5))), "\n")
+```
+
+```{r diag-plots, fig.cap="Residual diagnostics. The mild funnel in the scale-location plot is why robust standard errors are reported; the Q-Q deviation reflects the skip/repeat mixture rather than a few influential points."}
+par(mfrow = c(1, 3), mar = c(4, 4, 2, 1))
+plot(fitted(m5), res, pch = 20, col = rgb(0, 0, 0, .25), cex = .6,
+     xlab = "fitted", ylab = "residual", main = "residuals vs fitted")
+abline(h = 0, col = "firebrick")
+plot(fitted(m5), sqrt(abs(scale(res))), pch = 20, col = rgb(0, 0, 0, .25), cex = .6,
+     xlab = "fitted", ylab = "sqrt|std resid|", main = "scale-location")
+qqnorm(rstandard(m5), pch = 20, cex = .5, main = "Q-Q (normal)")
+qqline(rstandard(m5), col = "firebrick")
+```
+
+Heteroscedasticity is present and modest, residuals are far from normal, and no
+observation is influential (largest Cook's D
+`r sprintf("%.3f", max(cd))`, far below 1). The non-normality is a *shape*
+problem — the response is a crossing of two behaviours — not an outlier problem,
+which is why the remedy is to report HC3 standard errors and to decompose the
+response (Section 6) rather than to delete points.
+
+# 5. Out of sample, robustly
+
+## 5.1 One split is an anecdote
+
+The first version reported a single 70/30 split. A 1,400-track test set has an R²
+standard error of roughly 0.02, which is eight to twenty times the increment under
+discussion — so one split cannot settle anything. Repeating it 200 times says what
+the model actually delivers.
+
+```{r cv}
+set.seed(7); B <- 200
+mtx <- sapply(names(f), function(nm) numeric(B))
+for (b in 1:B) {
+  tr <- sample(nrow(ca), floor(.7 * nrow(ca)))
+  for (nm in names(f)) {
+    m <- lm(f[[nm]], ca[tr, ]); p <- predict(m, ca[-tr, ])
+    ok <- !is.na(p); yt <- ca$log_msPlayed[-tr][ok]
+    mtx[, nm][b] <- 1 - sum((yt - p[ok])^2) / sum((yt - mean(ca$log_msPlayed[tr]))^2)
+  }
+}
+cvtab <- data.frame(model = colnames(mtx), test_R2 = colMeans(mtx),
+                    sd = apply(mtx, 2, sd),
+                    lo = apply(mtx, 2, quantile, .025),
+                    hi = apply(mtx, 2, quantile, .975))
+cvtab[, 2:5] <- round(cvtab[, 2:5], 4)
+print(cvtab, row.names = FALSE)
+dlt <- mtx[, "M5"] - mtx[, "M4"]
+cat("\naudio increment out of sample: mean", sprintf("%+.4f", mean(dlt)),
+    "95% [", sprintf("%+.4f", quantile(dlt, .025)), ",",
+    sprintf("%+.4f", quantile(dlt, .975)), "] positive in",
+    sprintf("%.0f%%", 100 * mean(dlt > 0)), "of splits\n")
+
+# the same model on the raw scale, which is the series the first version reported
+raw_r2 <- numeric(B); set.seed(7)
+for (b in 1:B) {
+  tr <- sample(nrow(ca), floor(.7 * nrow(ca)))
+  m  <- lm(msPlayed ~ danceability + energy + tempo + genre + artistName, ca[tr, ])
+  pr <- predict(m, ca[-tr, ]); yt <- ca$msPlayed[-tr]
+  raw_r2[b] <- 1 - sum((yt - pr)^2) / sum((yt - mean(ca$msPlayed[tr]))^2)
+}
+cat("same wide model, raw msPlayed scale: mean test R2 =",
+    sprintf("%.3f", mean(raw_r2)), "| negative in",
+    sprintf("%.0f%%", 100 * mean(raw_r2 < 0)), "of splits\n")
+```
+
+One of these overturns the first version's conclusion; the other agrees with its
+caution, but for a completely different reason.
+
+* **The model does generalise.** In at least 97.5% of splits every categorical model
+  has a positive test R² (the 2.5% quantile is above zero for all of them), and the
+  wide model averages `r sprintf("%.3f", round(mean(mtx[, "M5"]), 3))`. The earlier
+  claim that the model "does not predict playback time out of sample" was a
+  property of the *raw response scale*, not of the model: the identical specification
+  on `msPlayed` in milliseconds averages
+  `r sprintf("%.3f", mean(raw_r2))` across the same 200 splits, and is negative in
+  `r sprintf("%.0f%%", 100 * mean(raw_r2 < 0))` of them, because a handful of
+  enormous values dominate squared error. On a variance-stabilised scale the same
+  model is modest but genuinely predictive.
+* **The audio increment does not clearly survive out of sample**: mean
+  `r sprintf("%+.4f", mean(dlt))`, interval
+  `r sprintf("[%+.4f, %+.4f]", quantile(dlt, .025), quantile(dlt, .975))`, positive in
+  `r sprintf("%.0f%%", 100 * mean(dlt > 0))` of splits. In-sample detectability and
+  out-of-sample usefulness are different claims, and the attributes have more of
+  the first than the second.
+
+## 5.2 Does the conclusion depend on my choices?
+
+A p-value from one specification is worth little if defensible alternatives
+disagree. The grid below crosses the response scale (log, Box-Cox, raw) with two
+genre codings and two artist codings and re-tests the audio block in each.
+
+```{r spec-curve}
+g_as_is <- as.character(ca$genre)
+g_other <- { g <- g_as_is; g[g == "Unspecified"] <- "Other"; g }
+gv <- list(as_is = g_as_is, unspecified_as_other = g_other)
+spec <- data.frame()
+for (tn in c("log10", "boxcox", "raw")) {
+  yy <- switch(tn,
+    log10  = log10(ca$msPlayed + 1),
+    boxcox = ((ca$msPlayed + 1)^lam_hat - 1) / lam_hat,
+    raw    = ca$msPlayed)
+  for (gn in names(gv)) for (ar in c("52-level", "named vs Other")) {
+    art <- if (ar == "52-level") factor(ca$artistName)
+           else factor(ifelse(as.character(ca$artistName) == "Other", "Other", "named"),
+                       levels = c("Other", "named"))
+    dd <- data.frame(y = yy, danceability = ca$danceability, energy = ca$energy,
+                     tempo = ca$tempo, genre = factor(gv[[gn]]), artist = art)
+    r0 <- lm(y ~ genre + artist, dd)
+    r1 <- lm(y ~ danceability + energy + tempo + genre + artist, dd)
+    spec <- rbind(spec, data.frame(scale = tn, genre = gn, artist = ar,
+                                   p = anova(r0, r1)$`Pr(>F)`[2]))
+  }
+}
+spec <- spec[order(spec$p), ]
+print(spec, row.names = FALSE, digits = 3)
+cat("\nrange of the audio-block p-value:", sprintf("%.4f", min(spec$p)), "to",
+    sprintf("%.4f", max(spec$p)), "|", sum(spec$p < .05), "of", nrow(spec),
+    "specifications below 0.05\n")
+```
+
+Read this table narrowly. The audio block clears 0.05 under the two near-log
+transforms and under neither raw-scale variant. Within a given scale, changing the
+genre or artist *coding* moves p by less than 0.002, so the result is not an artefact
+of how the dummies were built — but *between* scales the same recoding moves it a
+great deal (0.49 to 0.14 on the raw scale), which is exactly the point: scale
+dominates coding. The two power transforms are also close enough to each other
+(λ = 0 and λ = 0.110) that they are barely two independent specifications. What the table shows is that the
+result is not an artefact of how the dummies were built; it does not show that the
+effect is robust to every choice, and the raw-scale p-values (0.14–0.49) are
+uncontrolled by any robust inference, so they are not evidence against the effect
+either.
+
+The choice that moves the headline R² most is **artist pruning**, which the grid
+above does not touch. The first version kept 178 artist levels; this version keeps
+52. Both are defensible, and they are not equivalent.
+
+```{r threshold}
+ca$artist_raw <- trimws(d$artist_full[!d$audio_missing])
+thr <- data.frame()
+for (k in c(10, 25, 50, 0)) {
+  a2 <- if (k == 0) factor(ca$artist_raw) else {
+    tt <- table(ca$artist_raw); keep <- names(tt[tt >= k])
+    factor(ifelse(ca$artist_raw %in% keep, ca$artist_raw, "Other"))
+  }
+  dd <- data.frame(y = ca$log_msPlayed, danceability = ca$danceability,
+                   energy = ca$energy, tempo = ca$tempo,
+                   genre = factor(as.character(ca$genre)), artist = a2)
+  r0 <- lm(y ~ genre + artist, dd)
+  r1 <- lm(y ~ danceability + energy + tempo + genre + artist, dd)
+  thr <- rbind(thr, data.frame(
+    artists = if (k == 0) "kept all" else paste0(">=", k, " tracks"),
+    levels = nlevels(a2), params = length(coef(r1)),
+    R2 = summary(r1)$r.squared, p_audio = anova(r0, r1)[["Pr(>F)"]][2]))
+}
+thr$R2 <- round(thr$R2, 4); thr$p_audio <- signif(thr$p_audio, 3)
+print(thr, row.names = FALSE)
+
+# and what the unpruned design costs out of sample (about 8 s per split)
+Xa <- model.matrix(~ danceability + energy + tempo + genre + factor(artist_raw),
+                   data = ca)
+ya <- ca$log_msPlayed
+set.seed(5); r2a <- numeric(5)
+for (b in 1:5) {
+  tr <- sample(nrow(ca), floor(.7 * nrow(ca)))
+  cf <- qr.coef(qr(Xa[tr, ]), ya[tr]); cf[is.na(cf)] <- 0
+  pr <- as.vector(Xa[-tr, ] %*% cf)
+  r2a[b] <- 1 - sum((ya[-tr] - pr)^2) / sum((ya[-tr] - mean(ya[tr]))^2)
+}
+cat(sprintf("unpruned design, %d splits: mean test R2 %.3f (sd %.3f), negative in %d of %d\n",
+            length(r2a), mean(r2a), sd(r2a), sum(r2a < 0), length(r2a)))
+```
+
+R² rises steadily with the number of artist levels — from
+`r sprintf("%.3f", min(thr$R2))` at the strictest pruning to
+`r sprintf("%.3f", max(thr$R2))` when every name is its own dummy — while the
+audio block stays significant throughout. That upward drift is why the ceiling in
+Section 7 has to be stated as a property of a threshold rather than of the data:
+most of the extra R² comes from fitting thousands of artist-specific means to
+4,765 tracks, not from new information. Pruning at 10 is the choice this analysis makes, and it is worth being explicit
+that it is a choice rather than a discovery: it retains enough artists to say
+something about artist identity, it does not collapse the artist axis to essentially
+one artist (which is what the >=50 row does), and it is not the row that maximises
+R². A reader who wants the higher R² has to buy 2,187 artist dummies for 4,765
+tracks, and the last line of output above is what that buys out of sample: the
+unpruned design explains 57% of variance in sample and predicts *worse than the
+mean* on held-out tracks, in every split tried. The extra R² is memorisation.
+
+## 5.3 Dependence between tracks of the same artist
+
+Artists contribute several tracks each, so their tracks are not independent
+observations, and ignoring that understates standard errors.
+
+```{r dep}
+if (have_nlme) {
+  m_a <- nlme::lme(log_msPlayed ~ genre + danceability + energy + tempo,
+                   random = ~ 1 | artist_raw, data = ca, method = "ML")
+  m_0 <- nlme::lme(log_msPlayed ~ genre, random = ~ 1 | artist_raw,
+                   data = ca, method = "ML")
+  v <- nlme::VarCorr(m_a); bs <- as.numeric(v[1, 2]); rs <- as.numeric(v[2, 2])
+  icc <- bs^2 / (bs^2 + rs^2)
+  cat(sprintf("between-artist SD %.3f | residual SD %.3f | ICC %.3f\n", bs, rs, icc))
+  L <- 2 * (as.numeric(logLik(m_a)) - as.numeric(logLik(m_0)))
+  cat(sprintf("audio block inside the random-intercept model: LRT chi2 = %.2f on 3 df, p = %.4g\n",
+              L, pchisq(L, 3, lower.tail = FALSE)))
+} else {
+  icc <- NA; cat("nlme not available - dependence check skipped\n")
 }
 
+# clustering is a different problem from heteroscedasticity, and needs its own fix
+g  <- droplevels(factor(ca$artist_raw))
+Xc <- model.matrix(m5); ec <- resid(m5); bm <- solve(crossprod(Xc))
+sG <- rowsum(Xc * ec, g)
+Vcl <- bm %*% crossprod(sG) %*% bm
+idx <- c("danceability", "energy", "tempo"); b3 <- coef(m5)[idx]
+Wcl <- as.numeric(t(b3) %*% solve(Vcl[idx, idx]) %*% b3)
+cr1 <- (nlevels(g) / (nlevels(g) - 1)) * ((nrow(ca) - 1) / (nrow(ca) - qr(Xc)$rank))
+Wcl <- Wcl * cr1
+cat(sprintf("artist-clustered Wald for the audio block: chi2 = %.2f on 3 df, p = %.3g (%d clusters)\n",
+            Wcl, pchisq(Wcl, 3, lower.tail = FALSE), nlevels(g)))
 ```
 
-To ensure the dataset remains focused on meaningful categories and avoids overcomplicating the analysis with rare genres, we now address infrequent genres by grouping them into a broader "Other" category. This step simplifies the genre distribution and strengthens the interpretability of our analysis. Let’s proceed with grouping these rare genres.
+Artist identity accounts for around
+`r if (!is.na(icc)) sprintf("%.0f%%", 100 * icc) else "(see summary)"` of the
+residual variance once genre is in the model, and the audio block survives that
+reframing as well as the cluster-robust Wald above. The small association is
+therefore not an artefact of pseudo-replication.
 
-**Step 5: Groupping Rare Categories**
-Combine rare genres into an "Other" category based on frequency.
+The two corrections answer different questions and are not substitutes: HC3
+(Section 4.1) fixes heteroscedasticity and assumes independent observations, while
+the clustered variance assumes nothing about the variance but allows arbitrary
+correlation within an artist. Only the second is a valid check on a model whose
+rows are tracks by the same artists, and it is the one to trust here.
 
-```{r}
-# Group genres with fewer than a threshold into "Other"
-threshold <- 50  # Define the threshold
-rare_genres <- names(genre_counts[genre_counts < threshold])
-spotify_analysis_data$genre <- ifelse(spotify_analysis_data$genre %in% rare_genres, "Other", spotify_analysis_data$genre)
+## 5.4 Selection: what excluding the 275 tracks costs
+
+```{r selection}
+sens <- summary(lm(log10(msPlayed + 1) ~ audio_missing + genre + artistName, data = d))
+cat("model on all", nrow(d), "tracks with an indicator for missing audio:\n")
+cat("  indicator p =", signif(sens$coefficients["audio_missingTRUE", 4], 3),
+    "| estimate =", sprintf("%+.3f", sens$coefficients["audio_missingTRUE", 1]),
+    sprintf("(%.0f%% less listening)", 100 * (10^sens$coefficients["audio_missingTRUE", 1] - 1)),
+    "\n  R2 =", sprintf("%.4f", sens$r.squared), "\n")
+cat("  R2 of the same model on the audio-complete sample:",
+    sprintf("%.4f", summary(fit$M4)$r.squared), "\n")
 ```
 
+That is weak evidence (p = 0.041 on one test, nothing else) that the excluded
+tracks differ, and the coefficient says in which direction: they were played less.
+They are therefore not missing at random with respect to the outcome. The
+exclusion is a real selection effect, it biases the audio-complete sample towards
+tracks that were listened to, and it is carried into the limitations rather than
+denied.
 
-**Step 6: Verify Cleaning**
-Checking the cleaned genre column for consistency.
+# 6. The decomposition that changes the answer
 
-```{r}
-# Verify the updated genre column
-unique_genres <- unique(spotify_analysis_data$genre)
-print(unique_genres)
+Everything above treats `msPlayed` as one response. It is two: whether a track was
+skipped, and how much it was played if not. Splitting the question this way
+resolves the apparent tension of Section 4.1 — that energy is "significant" while
+the association is tiny.
+
+```{r hurdle}
+ca$skip <- as.integer(ca$plays < 1)
+lg0 <- glm(skip ~ genre + artistName, data = ca, family = binomial)
+lg1 <- glm(skip ~ danceability + energy + tempo + genre + artistName, data = ca, family = binomial)
+cat("=== EXTENSIVE margin: P(skipped before one full play) ===\n")
+print(anova(lg0, lg1, test = "LRT"))
+bidx <- c("danceability", "energy", "tempo")
+Vg <- vcov(lg1); bg <- coef(lg1)[bidx]
+W  <- as.numeric(t(bg) %*% solve(Vg[bidx, bidx]) %*% bg)
+cat(sprintf("Wald for the audio block: chi2 = %.2f on 3 df, p = %.3g\n",
+            W, pchisq(W, 3, lower.tail = FALSE)))
+lgt <- summary(lg1)$coefficients[c("danceability", "energy", "tempo"), c(1, 2, 4)]
+colnames(lgt) <- c("log_odds", "SE", "p"); lgt <- round(lgt, 4)
+cat("\nlogistic coefficients on the skip margin:\n"); print(lgt)
+OR <- exp(coef(lg1)["energy"] * sd(ca$energy))
+cat(sprintf("energy odds ratio per SD: %.3f\n", OR))
+hi <- ca$energy >= quantile(ca$energy, .9)
+cat(sprintf("skip rate, top energy decile: %.1f%% | below: %.1f%%\n",
+            100 * mean(ca$skip[hi]), 100 * mean(ca$skip[!hi])))
+
+sub <- ca[ca$skip == 0, ]
+mi0 <- lm(log_msPlayed ~ genre + artistName, data = sub)
+mi1 <- lm(log_msPlayed ~ danceability + energy + tempo + genre + artistName, data = sub)
+cat("\n=== INTENSIVE margin: listening given at least one full play (n =", nrow(sub), ") ===\n")
+print(anova(mi0, mi1))
+p_int <- anova(mi0, mi1)[["Pr(>F)"]][2]
+Xi <- model.matrix(mi1); ei <- resid(mi1); hi2 <- hatvalues(mi1)
+bi <- solve(crossprod(Xi))
+Vi <- bi %*% crossprod(Xi * (ei / (1 - hi2))^2, Xi) %*% bi
+se_i <- sqrt(Vi["energy", "energy"])
+cat(sprintf("energy, HC3: %+.3f (SE %.3f, p = %.3f)\n", coef(mi1)["energy"], se_i,
+            2 * pt(-abs(coef(mi1)["energy"] / se_i), df.residual(mi1))))
+cat(sprintf("energy coefficient: %+.3f (p = %.3f)\n", coef(mi1)["energy"],
+            summary(mi1)$coefficients["energy", 4]))
+
+# same model on all tracks, with an indicator for having reached one full play
+m5s <- lm(log_msPlayed ~ danceability + energy + tempo + skip + genre + artistName,
+          data = ca)
+cat(sprintf("energy without the skip indicator: %+.4f | with it: %+.4f (p = %.2f)\n",
+            coef(m5)["energy"], coef(m5s)["energy"],
+            summary(m5s)$coefficients["energy", 4]))
+sk <- grep("^skip", names(coef(m5s)), value = TRUE)[1]
+ps <- summary(m5s)$coefficients[sk, 4]
+cat(sprintf("skip indicator itself (%s): %+.4f (p %s)\n", sk, coef(m5s)[[sk]],
+            if (ps < 1e-16) "< 1e-16" else sprintf("= %.2g", ps)))
 ```
 
-After verifying the cleaning process for the `genre` column, we noticed an unexpected overlap between categories like `"other"` and `"unspecified genre"`. Addressing these overlaps is essential to maintain consistency and avoid redundancy in our analysis. This step ensures that our categorical variable truly reflects distinct and meaningful groupings, paving the way for cleaner insights in the later stages.
+The contrast is stark, and it is the finding:
 
+* On the **extensive** margin the audio block is clearly detected
+  (p = `r sprintf("%.1g", pchisq(W, 3, lower.tail = FALSE))`). A
+  one-standard-deviation increase in energy multiplies the odds of falling below
+  one full play by `r sprintf("%.2f", OR)` — a
+  `r sprintf("%.0f%%", 100 * (OR - 1))` increase in the odds. In plain terms,
+  tracks in the top energy decile are skipped
+  `r sprintf("%.0f%%", 100 * mean(ca$skip[hi]))` of the time against
+  `r sprintf("%.0f%%", 100 * mean(ca$skip[!hi]))` below it.
+* On the **intensive** margin — among tracks played at least once — the *block* is
+  not significant (p = `r sprintf("%.2f", p_int)`), but energy taken on its own is —
+  at least marginally — and the sign is **reversed**: `r sprintf("%+.3f", coef(mi1)["energy"])`
+  (HC3 p = `r sprintf("%.3f", 2 * pt(-abs(coef(mi1)["energy"] / se_i), df.residual(mi1)))`).
+  Among tracks that were played, higher energy goes with *more* listening.
 
-##### Resolving Overlaps in the Genre Column
+The pooled `r sprintf("%+.2f", coef(m5)["energy"])` in Section 4.1 is therefore
+**not a weighted average of those two slopes**, and it is worth saying so because the
+arithmetic invites it: the skip margin is a log-odds and the duration margin is a
+log-time, and `r sprintf("%+.2f", coef(m5)["energy"])` lies outside the interval
+spanned by `r sprintf("%+.2f", coef(m5s)["energy"])` and
+`r sprintf("%+.3f", coef(mi1)["energy"])`. The decomposition buys direction and
+attribution rather than arithmetic: when the model is told whether a track reached
+one full play, energy's coefficient moves to
+`r sprintf("%+.3f", coef(m5s)["energy"])` (p = `r sprintf("%.2f", summary(m5s)$coefficients["energy", 4])`,
+indistinguishable from zero) and the indicator absorbs the association
+(`r sprintf("%+.2f", coef(m5s)[[sk]])`).
 
-```{r}
-# Combine "other" and "unspecified genre" into a single category "Other"
-spotify_analysis_data$genre <- ifelse(
-  spotify_analysis_data$genre %in% c("other", "unspecified genre"), 
-  "Other", 
-  spotify_analysis_data$genre
-)
+The two conditional estimates disagree — `r sprintf("%+.3f", coef(mi1)["energy"])`
+on the played-only subsample, `r sprintf("%+.3f", coef(m5s)["energy"])` when the
+whole sample is modelled with the indicator — but they agree on the thing that
+matters: **neither is negative**. What is robustly negative is the association with
+reaching a full play at all.
 
-# Reassess the updated genre distribution
-genre_counts_updated <- sort(table(spotify_analysis_data$genre), decreasing = TRUE)
-head(genre_counts_updated, 25)  # Display the top 25 genres
+Read this as a measurement problem, not a causal one. The response is cumulative
+listening, so "very short" is bounded below by zero while "long" is bounded by
+taste, and the same attribute can move the two margins in opposite directions
+without contradiction. What the data supports is that energy predicts *abandonment
+before one full play*; it does not support a claim about how long a track is enjoyed
+once it is being enjoyed.
+
+# 7. What the evidence supports
+
+**On the original question.** Genre and artist are the substantive predictors:
+together they explain about `r sprintf("%.0f%%", 100 * r2(fit$M4))` of the variance
+in log playback time. The three audio attributes add
+`r sprintf("%.2f", 100 * (r2(fit$M5) - r2(fit$M4)))` percentage points on top of
+that, and the increment is statistically detectable
+(F = `r sprintf("%.2f", bt$F[4])`, p = `r sprintf("%.4f", bt$p[4])`). Energy's coefficient survives
+an HC3 standard error, and the block survives an artist-clustered Wald (p = `r sprintf("%.3g", pchisq(Wcl, 3, lower.tail = FALSE))`) and a
+random intercept for artist. It is **not** equally robust elsewhere: it does not
+clearly improve out-of-sample prediction
+(`r sprintf("%+.4f", mean(dlt))` mean test R², positive in
+`r sprintf("%.0f%%", 100 * mean(dlt > 0))` of splits), and BIC prefers the model
+without it — indeed BIC prefers genre alone over any model that includes the
+artist fixed effects.
+
+Of the three attributes, only **energy** is individually distinguishable, and its
+single coefficient is the least interesting thing about it: it is negative pooled
+(`r sprintf("%+.2f", coef(m5)["energy"])`), negative and strong on the skip margin
+(odds ratio `r sprintf("%.2f", OR)` per SD), and positive on the duration margin
+(`r sprintf("%+.2f", coef(mi1)["energy"])`, HC3 p = `r sprintf("%.3f", 2 * pt(-abs(coef(mi1)["energy"] / se_i), df.residual(mi1)))`
+— marginal, and reported as marginal).
+Which of those you call "the effect of energy" is a decision about which question
+you are asking, not a fact about the data.
+
+**On the two claims this work supersedes.**
+
+* *"The attributes are redundant given genre and artist."* This is **right about
+  the practical consequence and wrong about the reason**. Taking redundancy to mean
+  what it has to mean operationally — that the attributes add nothing to a model of
+  the outcome — they add
+  `r sprintf("%.2f", 100 * (r2(fit$M5) - r2(fit$M4)))` percentage points, about
+  `r sprintf("%.0f%%", 100 * (r2(fit$M5) - r2(fit$M4)) / r2(fit$M5))` of the
+  explained variance, and nothing detectable out of sample. Almost all of their
+  potential contribution *is* redundant for this outcome. But they are not
+  *duplicates* of the categoricals: only
+  `r sprintf("%.0f%%", 100 * summary(lm(danceability ~ genre + artistName, ca))$r.squared)`
+  of danceability, `r sprintf("%.0f%%", 100 * summary(lm(energy ~ genre + artistName, ca))$r.squared)`
+  of energy and `r sprintf("%.0f%%", 100 * summary(lm(tempo ~ genre + artistName, ca))$r.squared)`
+  of tempo are explained by genre and artist, so most of their variance is
+  information the categoricals genuinely do not carry. They are orthogonal to the
+  categoricals **and** uninformative about listening, which is a different thing
+  from being redundant, and it recommends something different: keep the features,
+  stop expecting them to carry a regression.
+* *"The model does not predict playback time out of sample."* **True only on the
+  untransformed scale**, and for a reason that is a property of the response rather
+  than of the model: the identical specification averages
+  `r sprintf("%.3f", mean(raw_r2))` on `msPlayed` in milliseconds (negative in
+  `r sprintf("%.0f%%", 100 * mean(raw_r2 < 0))` of 200 splits) and
+  `r sprintf("%.3f", mean(mtx[, "M5"]))` on the log scale. Both numbers are in
+  Section 5.1.
+
+**What would still change the answer.** These are the limitations that matter, in
+rough order of how much they constrain the reading.
+
+* **Only 3 of the 13 audio variables are modelled.** Key, loudness, mode,
+  speechiness, acousticness, instrumentalness, liveness, valence, `duration_ms` and
+  `time_signature` never enter. They were inherited from the first version's feature
+  selection and not re-derived here, so "the audio attributes are weakly related to
+  listening" is a statement about these three, not about the audio block in general.
+* **`duration_ms` is the denominator of the skip definition and is never a
+  covariate.** Long tracks need more accumulated time to reach one full play, so
+  part of what the skip margin measures is track length.
+* **The duration-margin estimate conditions on `skip == 0`** — on an outcome of the
+  variable being interpreted. It is a conditional association among played tracks,
+  not a causal duration effect, and a proper hurdle model would be needed before it
+  could be read as one.
+* **No multiplicity control.** Roughly a dozen specifications were tested and the
+  headline is p = `r sprintf("%.3f", bt$p[4])`; a Bonferroni correction across the
+  twelve specifications would put it at roughly 0.05 — marginal by any reading,
+  which is the right way to treat it.
+* **275 tracks (5.5%) have no audio features** and are excluded on evidence that
+  they differ systematically (Section 5.4). The genre taxonomy still puts
+  `r sprintf("%.0f%%", 100 * mean(as.character(ca$genre) == "Other"))` of the
+  modelling sample in `Other`, which limits what genre can control for.
+* **Audio features are algorithmic outputs, not measurements**, so these are not
+  clean structural effects and the direction of any bias is unknown.
+* **The response is an aggregate over an unobserved listening history** with no
+  session, device, timestamp or user information, so omitted context cannot be
+  ruled out, and a "skip" here is only an arithmetic fact (`msPlayed < duration`),
+  not evidence that anyone decided anything.
+
+# 8. Reproducing this
+
+```{r session}
+cat("R", as.character(getRversion()), "|", R.version$platform, "\n")
+cat("packages used: stats, graphics",
+    if (have_nlme) "+ nlme", "(nlme optional; the analysis runs without it)\n")
 ```
 
-
-###### Inference: Managing the Large "Other" Category
-
-- **Observation**: A significant portion of songs (4,726 entries) fall under the `"Other"` category, highlighting potential overgeneralization of infrequent genres.
-- **Implications**:
-  - While simplifying the dataset, this grouping may obscure insights from rare genres that could influence playback time (`msPlayed`).
-  - Retaining more genre-specific details could enhance the interpretability and predictive power of the model.
-- **Action**:
-  - Refine the threshold for grouping into `"Other"`.
-  - Explore the distribution within `"Other"` to identify recurring patterns or clusters of genres that can be reclassified.
-  - Balance simplification with information retention for optimal model performance.
-
-To address the overgeneralization caused by the `"Other"` category, we can refine the threshold and explore patterns within the grouped entries. This step ensures a more meaningful representation of genre diversity in the dataset, improving the quality of subsequent analyses.
-
-Given the current project's focus and time constraints, we have decided to proceed with the current genre grouping without further refinement. Refining `"Other"` into more granular categories remains a potential improvement and will be included in the **Future Works** section. Now, we move on to cleaning and preparing the `artistName` column to ensure its consistency and usability in the analysis.
-
-#### 2.2.2 ArtistName Column:
-
-The `artistName` column is critical for identifying key patterns and trends related to song playback. Cleaning this column involves:
-
-1. **Removing whitespace**: Ensuring no leading or trailing spaces exist.
-2. **Handling special characters**: Standardizing entries with special characters.
-3. **Converting to lowercase**: Ensuring uniformity.
-4. **Grouping rare artists**: Combining less frequent artists into an `"Other"` category to reduce categorical complexity.
-
-
-**Step 1: Remove Whitespace**
-
-```{r}
-# Remove leading and trailing whitespace in artistName
-spotify_analysis_data$artistName <- trimws(spotify_analysis_data$artistName)
-
-# Check for whitespace issues after cleaning
-any(grepl("^\\s|\\s$", spotify_analysis_data$artistName))  # Should return FALSE
-
+```{r, eval=FALSE}
+# from the repository root:
+rmarkdown::render("Enhanced-Spotify-Attribute-Analysis.rmd")
 ```
 
-**Step 2: Handle Special Characters**
-
-```{r}
-# Replace common symbols with intended letters/words
-spotify_analysis_data$artistName <- gsub("\\$", "s", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("@", "a", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("&", " and ", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("!", "", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("#", "", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("\\*", "", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("%", " percent ", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("\\.", "", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub(",", "", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("\\(", "", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("\\)", "", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("\\[", "", spotify_analysis_data$artistName)
-spotify_analysis_data$artistName <- gsub("\\]", "", spotify_analysis_data$artistName)
-# Add/repeat replacements here for other symbols as needed
-
-# Remove any remaining special characters except spaces
-spotify_analysis_data$artistName <- gsub("[^a-zA-Z0-9 ]", "", spotify_analysis_data$artistName)
-
-# Normalize multiple spaces to single space
-spotify_analysis_data$artistName <- gsub("\\s+", " ", spotify_analysis_data$artistName)
-
-# View the first few artist names to confirm cleaning
-head(spotify_analysis_data$artistName, 10)
-
-# Check for remaining special characters (should be 0)
-sum(grepl("[^a-zA-Z0-9 ]", spotify_analysis_data$artistName))
-
-# Check for extra leading/trailing spaces (should be 0)
-sum(grepl("^\\s|\\s$", spotify_analysis_data$artistName))
-
-# Check for any all-blank or empty names (should be 0)
-sum(nchar(trimws(spotify_analysis_data$artistName)) == 0)
-
-
-```
-```{r}
-# Trimming all leading/trailing whitespace
-spotify_analysis_data$artistName <- trimws(spotify_analysis_data$artistName)
-sum(grepl("^\\s|\\s$", spotify_analysis_data$artistName)) # Should now return 0
-
-# Replacing blank artist names with "Other"
-spotify_analysis_data$artistName[nchar(spotify_analysis_data$artistName) == 0] <- "Other"
-sum(nchar(spotify_analysis_data$artistName) == 0) # Should now return 0
-
-# Spot-checking output again:
-head(spotify_analysis_data$artistName, 10)  # Should now be readable and clean
-
-```
-
-
-**Step 3: Convert to Lowercase**
-
-```{r}
-# Converting artist names to lowercase for uniformity
-spotify_analysis_data$artistName <- tolower(spotify_analysis_data$artistName)
-
-# Verifying conversion
-any(grepl("[A-Z]", spotify_analysis_data$artistName))  # Should return FALSE
-
-# Convert to lower case for uniformity
-spotify_analysis_data$artistName <- tolower(spotify_analysis_data$artistName)
-
-# View first entries to confirm cleaning
-head(spotify_analysis_data$artistName, 10)
-
-
-```
-
-**Step 4: Group Rare Artists into "Other"**
-
-```{r}
-# Defining threshold for grouping rare artists
-artist_threshold <- 10  # Appearance count threshold
-artist_counts <- table(spotify_analysis_data$artistName)
-rare_artists <- names(artist_counts[artist_counts < artist_threshold])
-
-# Group rare artists
-spotify_analysis_data$artistName <- ifelse(spotify_analysis_data$artistName %in% rare_artists, "Other", spotify_analysis_data$artistName)
-
-# Check top occurrences
-artist_counts_after <- table(spotify_analysis_data$artistName)
-head(sort(artist_counts_after, decreasing = TRUE), 20)
-
-```
-
-##### **Step 5: Convert to Factor**
-
-```{r}
-# Converting artistName to a factor for regression analysis
-spotify_analysis_data$artistName <- as.factor(spotify_analysis_data$artistName)
-
-# Verifying conversion
-str(spotify_analysis_data$artistName)
-
-```
-
-##### **Inference**
-- Whitespace and special characters have been removed or replaced, resulting in consistent and standardized artist names.
-- Rare and infrequent artists are grouped into an "Other" category, simplifying the variable and enhancing interpretability for regression modeling.
-- The `artistName` column is now lowercased, free of blanks, and converted to a factor, ensuring it is fully prepared for analysis and modeling.
-
-
-### 2.3 Outlier Handling for Continuous Variables
-
-Outliers in `danceability`, `energy`, and `tempo` can significantly impact regression analysis, leading to biased or unreliable results. We’ll identify and handle these outliers using the **IQR method**.
-
-
-#### Step 1: Identifying Outliers
-```{r}
-# Define a function to identify outliers using the IQR method
-identify_outliers <- function(column) {
-  Q1 <- quantile(column, 0.25, na.rm = TRUE)  # 25th percentile
-  Q3 <- quantile(column, 0.75, na.rm = TRUE)  # 75th percentile
-  IQR <- Q3 - Q1                              # Interquartile range
-  lower_bound <- Q1 - 1.5 * IQR               # Lower bound
-  upper_bound <- Q3 + 1.5 * IQR               # Upper bound
-  list(lower = lower_bound, upper = upper_bound)
-}
-
-# Check outliers for continuous variables
-outlier_bounds <- lapply(spotify_analysis_data[, c("danceability", "energy", "tempo")], identify_outliers)
-
-# Print bounds
-print(outlier_bounds)
-```
-
-
-#### Interpretation:
-
-1. **Danceability**:
-   - **Lower threshold**: 0.2305
-   - **Upper threshold**: 0.9945
-   - **Outliers**: Any values below 0.2305 or above 0.9945 are considered potential outliers.
-
-2. **Energy**:
-   - **Lower threshold**: -0.23
-   - **Upper threshold**: 1.322
-   - **Outliers**: Any values below -0.23 or above 1.322 are considered potential outliers.
-
-3. **Tempo**:
-   - **Lower threshold**: 40.89775
-   - **Upper threshold**: 195.8918
-   - **Outliers**: Any values below 40.89775 or above 195.8918 are considered potential outliers.
-
-Let's now perform- **Visualization** of these outliers:
-   - Highlight outliers in the visualizations (boxplots).
-
-
-```{r}
-ggplot(spotify_analysis_data, aes(y = danceability)) +
-  geom_boxplot(fill = "skyblue") +
-  labs(title = "Boxplot of Danceability (Before Handling Outliers)", y = "Danceability")
-
-ggplot(spotify_analysis_data, aes(y = energy)) +
-  geom_boxplot(fill = "lightgreen") +
-  labs(title = "Boxplot of Energy (Before Handling Outliers)", y = "Energy")
-
-ggplot(spotify_analysis_data, aes(y = tempo)) +
-  geom_boxplot(fill = "coral") +
-  labs(title = "Boxplot of Tempo (Before Handling Outliers)", y = "Tempo")
-
-```
-
-
-#### Step 2: Handle Outliers
-Options for handling outliers include:
-- **Capping**: Replace outliers with the nearest acceptable value within the bounds.
-- **Removing**: Remove rows containing outliers.
-
-Here, we cap the outliers to ensure data retention.
-
-```{r}
-# Defining a function to calculate outlier bounds
-identify_outliers <- function(column) {
-  iqr <- IQR(column, na.rm = TRUE)
-  q1 <- quantile(column, 0.25, na.rm = TRUE)
-  q3 <- quantile(column, 0.75, na.rm = TRUE)
-  lower_bound <- q1 - 1.5 * iqr
-  upper_bound <- q3 + 1.5 * iqr
-  return(list(lower = lower_bound, upper = upper_bound))
-}
-
-# Defining a function to cap outliers
-cap_outliers <- function(column, bounds) {
-  column <- ifelse(column < bounds$lower, bounds$lower, column)
-  column <- ifelse(column > bounds$upper, bounds$upper, column)
-  return(column)
-}
-
-# Applying capping to the continuous variables
-for (col in c("danceability", "energy", "tempo")) {
-  # Calculate bounds
-  bounds <- identify_outliers(spotify_analysis_data[[col]])
-  
-  # Cap outliers
-  spotify_analysis_data[[col]] <- cap_outliers(spotify_analysis_data[[col]], bounds)
-}
-
-# Verifying outlier handling
-summary(spotify_analysis_data[, c("danceability", "energy", "tempo")])
-
-```
-
-Visualisation - 
-
-```{r}
-# Visualizing outliers before and after capping using boxplots
-par(mfrow = c(2, 3))  # Set layout for 3 variables before and after
-
-# Before Capping
-boxplot(data$danceability, main = "Danceability (Before)", ylab = "Values")
-boxplot(data$energy, main = "Energy (Before)", ylab = "Values")
-boxplot(data$tempo, main = "Tempo (Before)", ylab = "Values")
-
-# After Capping
-boxplot(spotify_analysis_data$danceability, main = "Danceability (After)", ylab = "Values")
-boxplot(spotify_analysis_data$energy, main = "Energy (After)", ylab = "Values")
-boxplot(spotify_analysis_data$tempo, main = "Tempo (After)", ylab = "Values")
-
-```
-
-#### **Inference on Outlier Handling**
-
-The outlier capping process successfully addressed extreme values in the **danceability** and **tempo** columns, leading to a more stable dataset for further analysis. This ensures that:
-- **Data retention** is maintained by keeping all observations while reducing the impact of outliers.
-- The **distribution** of these variables is now more consistent, minimizing the potential influence of extreme values on the model.
-- **Energy** had few initial outliers, so this variable’s distribution remains mostly unchanged, reflecting that the majority of values were within acceptable bounds.
-
-This step contributes to a cleaner dataset that’s better suited for regression analysis, as it reduces noise from extreme values that could skew insights and predictions.
-
-With outliers addressed, the next logical step is to **normalize the continuous variables**—such as **danceability**, **energy**, and **tempo**—to ensure they’re on a comparable scale. Normalization is important for regression analysis, as it allows each variable to contribute equally to the model without one variable disproportionately influencing the results due to its scale. 
-
-### 2.4 Normalization/ Scaling of Variables-
-To normalize the continuous variables, we'll scale them to a range between 0 and 1 using Min-Max normalization. Here’s the code to perform this step:
-
-```{r}
-# Define a function for Min-Max normalization
-normalize <- function(column) {
-  return((column - min(column)) / (max(column) - min(column)))
-}
-
-# Apply normalization to the continuous variables
-spotify_analysis_data$danceability <- normalize(spotify_analysis_data$danceability)
-spotify_analysis_data$energy <- normalize(spotify_analysis_data$energy)
-spotify_analysis_data$tempo <- normalize(spotify_analysis_data$tempo)
-
-# Verify normalization
-summary(spotify_analysis_data[, c("danceability", "energy", "tempo")])
-```
-
-##### **Inference After Normalization**
- The normalization has been successfully applied to the continuous variables (`danceability`, `energy`, and `tempo`). Now, each of these variables is scaled between 0 and 1, as seen from the summary statistics. This transformation makes the dataset ready for further analysis, ensuring that the scales of these variables do not disproportionately influence the results.
+The first version of this analysis, which produced the superseded conclusions, is
+preserved unmodified in `../work/v1/` for comparison.
